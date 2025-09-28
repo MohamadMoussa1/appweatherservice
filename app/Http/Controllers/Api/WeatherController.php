@@ -46,6 +46,40 @@ class WeatherController extends Controller
                 'errors' => $e->errors()
             ], 400);
             
+        } catch (\Illuminate\Http\Client\RequestException $e) {
+            // Handle HTTP client errors (network issues, timeouts, etc.)
+            $status = $e->response ? $e->response->status() : 503;
+            $message = match($status) {
+                401 => 'Invalid API key. Please check your OpenWeather configuration.',
+                404 => 'City not found. Please check the city name and try again.',
+                429 => 'API rate limit exceeded. Please try again later.',
+                500, 502, 503, 504 => 'Weather service is currently unavailable. Please try again later.',
+                default => 'Unable to connect to the weather service. Please try again.'
+            };
+
+            \Illuminate\Support\Facades\Log::error('Weather API request failed', [
+                'status' => $status,
+                'message' => $e->getMessage(),
+                'city' => $city ?? 'unknown'
+            ]);
+
+            return response()->json([
+                'error' => $status < 500 ? 'Client Error' : 'Service Unavailable',
+                'message' => $message
+            ], $status >= 400 && $status < 600 ? $status : 503);
+            
+        } catch (\JsonException $e) {
+            // Handle JSON parsing errors
+            \Illuminate\Support\Facades\Log::error('Failed to parse weather API response', [
+                'message' => $e->getMessage(),
+                'city' => $city ?? 'unknown'
+            ]);
+
+            return response()->json([
+                'error' => 'Invalid Response',
+                'message' => 'Received invalid data from the weather service.'
+            ], 502);
+            
         } catch (\InvalidArgumentException $e) {
             // Handle invalid arguments
             return response()->json([
@@ -55,20 +89,25 @@ class WeatherController extends Controller
             
         } catch (\RuntimeException $e) {
             // Handle service errors with appropriate status code
-            $status = $e->getCode() >= 400 && $e->getCode() < 600 
-                ? $e->getCode() 
-                : 500;
-                
+            $status = $e->getCode() >= 400 && $e->getCode() < 600 ? $e->getCode() : 500;
+            
+            \Illuminate\Support\Facades\Log::error('Weather service error', [
+                'status' => $status,
+                'message' => $e->getMessage(),
+                'city' => $city ?? 'unknown'
+            ]);
+            
             return response()->json([
                 'error' => $status < 500 ? 'Client Error' : 'Server Error',
                 'message' => $e->getMessage()
             ], $status);
             
         } catch (\Exception $e) {
-            // Log unexpected errors
+            // Log unexpected errors with stack trace
             \Illuminate\Support\Facades\Log::error('Unexpected error in WeatherController: ' . $e->getMessage(), [
                 'exception' => $e,
-                'city' => $city ?? 'unknown'
+                'city' => $city ?? 'unknown',
+                'trace' => $e->getTraceAsString()
             ]);
             
             // Return generic error response
